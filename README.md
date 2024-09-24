@@ -114,5 +114,10 @@ git checkout main
 git pull origin main
 git checkout -b your-new-branch-name
 ```
+## Branch Protection Rules and Merging into Main
 
-This workflow helps maintain a clean project history and allows for proper code review before changes are merged into the main branch.
+This project requires at least one review before merging changes into the main branch. This helps maintain code quality and encourages collaboration. Here's how it works:
+
+1. When you create a pull request, it cannot be merged until at least one other contributor reviews and approves the changes.
+2. The reviewer(s) will examine your code, may comment on it, and may request changes.
+3. Once your pull request has been approved, you can merge it into the main branch.
