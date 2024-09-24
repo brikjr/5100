@@ -1,10 +1,12 @@
 # Project Setup
 
-This project uses Python 3.10 with PyTorch, Pandas, and NumPy. Follow the instructions below to set up your environment.
+This project uses Python 3.10 with PyTorch, Pandas, and NumPy. Follow the instructions below to set up your environment and contribute to the project.
 
 ## Prerequisites
 
 - Miniconda or Anaconda installed on your system
+- Git installed on your system
+- GitHub account
 
 ## Environment Setup
 
@@ -61,3 +63,58 @@ After installation, initialize Conda for your shell:
 ```
 
 Remember to restart your terminal after initialization.
+
+## GitHub Workflow
+
+To contribute to this project, follow these steps:
+
+1. Clone the repository:
+   ```
+   git clone https://github.com/your-username/your-repo-name.git
+   cd your-repo-name
+   ```
+
+2. Create a new branch for your work:
+   ```
+   git checkout -b your-branch-name
+   ```
+   Choose a descriptive name for your branch that reflects the changes you're making.
+
+3. Verify that you're on the correct branch:
+   ```
+   git branch
+   ```
+   This command will list all local branches, with an asterisk (*) next to the current branch.
+
+4. Make your changes and commit them:
+   ```
+   git add .
+   git commit -m "Descriptive commit message"
+   ```
+
+5. Push your branch to GitHub:
+   ```
+   git push origin your-branch-name
+   ```
+
+6. Go to the GitHub repository page and click on "Pull requests".
+
+7. Click "New pull request".
+
+8. Select your branch from the dropdown menu and click "Create pull request".
+
+9. Add a title and description for your pull request, explaining the changes you've made.
+
+10. Click "Create pull request" to submit it for review.
+
+11. Wait for the project maintainers to review your changes. They may request modifications or approve and merge your changes into the main branch.
+
+Remember to always pull the latest changes from the main branch before starting new work:
+
+```
+git checkout main
+git pull origin main
+git checkout -b your-new-branch-name
+```
+
+This workflow helps maintain a clean project history and allows for proper code review before changes are merged into the main branch.
