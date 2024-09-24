@@ -49,18 +49,17 @@ conda create -n 5100 python=3.10
 conda activate 5100
 ```
 
+## Package Versions
+
+### THERE IS NO `requirements.txt` YET SKIP THIS STEP
+The `requirements.txt` file specifies the following package versions
+
 3. Install the required packages:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Package Versions
-
-### THERE IS NO `requirements.txt` YET SKIP THIS STEP
-The `requirements.txt` file specifies the following package versions
-
-These versions are compatible with each other and Python 3.10. If you need to update any packages, make sure to test for compatibility.
 
 ## GitHub Workflow
 
