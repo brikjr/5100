@@ -40,13 +40,21 @@ After installation, initialize Conda for your shell:
 1. Create a new Conda environment:
 
 ```bash
-conda create -n 5100 python=3.10
+conda create -n 5100 python=3.8
 ```
 
 2. Activate the environment:
 
 ```bash
 conda activate 5100
+```
+
+```bash
+conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
+```
+
+```bash
+conda install sympy=1.13.1 -c conda-forge
 ```
 
 ## Package Versions
