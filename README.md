@@ -35,6 +35,19 @@ After installation, initialize Conda for your shell:
 
 ###### Remember to restart your terminal after initialization.
 
+### If you wanna use Discovery:
+### Discovery RC login:
+
+```bash
+ssh neu_username@login.discovery.neu.edu
+```
+```canvas password```
+
+- Read the discovery documentation: https://rc-docs.northeastern.edu/en/latest/
+- Learn about slurm jobs from docs
+- Utilize sbatch to submit jobs
+
+
 ## Environment Setup
 
 1. Create a new Conda environment:
@@ -49,25 +62,23 @@ conda create -n 5100 python=3.8
 conda activate 5100
 ```
 
-```bash
-conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
-```
-
-```bash
-conda install sympy=1.13.1 -c conda-forge
-```
-
 ## Package Versions
 
-### THERE IS NO `requirements.txt` YET SKIP THIS STEP
-The `requirements.txt` file specifies the following package versions
+### CUDA setup
 
 3. Install the required packages:
 
 ```bash
-pip install -r requirements.txt
+pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1
 ```
 
+```bash
+pip install pandas tqdm tansformers 
+```
+
+```bash
+pip install 'accelerate>=0.26.0'
+```
 
 ## GitHub Workflow
 
