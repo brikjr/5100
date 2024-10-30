@@ -3,121 +3,139 @@ import pandas as pd
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+import re
 
-# Constants
+# Constants remain the same
 INPUT_CSV = '../data/Books.csv'
 OUTPUT_CSV = '../data/Books_with_descriptions.csv'
-CHECKPOINT_INTERVAL = 100  # Save after every 100 rows
+CHECKPOINT_INTERVAL = 100
+MODEL_NAME = "meta-llama/Llama-2-7b-chat-hf"
 
-# Load LLaMA model and tokenizer
-model_name = "meta-llama/Llama-Guard-3-8B"
+def clean_description(text):
+    """Enhanced cleaning of model output."""
+    # Remove common prefixes
+    prefixes_to_remove = [
+        r'Here is a one-sentence summary of.*?:',
+        r'Sure! Here is a one-sentence.*?:',
+        r'Here\'s a one-sentence description.*?:',
+        r'\[INST\].*?\[/INST\]',
+        r'This book is',
+        r'The book is',
+        r'This is',
+    ]
+    
+    for prefix in prefixes_to_remove:
+        text = re.sub(prefix, '', text, flags=re.IGNORECASE)
+    
+    # Clean up quotes and formatting
+    text = re.sub(r'^["\']\s*|\s*["\']$', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Remove numbered indices
+    text = re.sub(r'\s+\d+\s*$', '', text)
+    
+    return text.strip()
 
-# Check if CUDA is available and set device accordingly
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device: {device}")
-
-try:
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="auto",  # Automatically map model to available devices
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        low_cpu_mem_usage=True  # Optimize memory usage
-    )
-except Exception as e:
-    print(f"Error loading model: {e}")
-    exit(1)
-
-def generate_description_llama(book_title):
-    prompt = (
-        f"Provide a concise description for the book titled \"{book_title}\". "
-        "Include the genre and a one-line summary of its content."
-    )
+def generate_description(book_title, tokenizer, model, device):
+    """Generate description with improved prompt."""
+    prompt = f"[INST] Generate a single sentence describing '{book_title}' and its genre. Do not include any introductory phrases or quotes. [/INST]"
+    
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=60,
+                max_new_tokens=100,
                 temperature=0.7,
-                do_sample=True,  # Enable sampling for more varied outputs
-                top_p=0.9,       # Nucleus sampling
-                top_k=50         # Top-K sampling
+                do_sample=True,
+                top_p=0.9,
+                top_k=50,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                repetition_penalty=1.2
             )
-        description = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        # Extract the generated part after the prompt
-        description = description[len(prompt):].strip()
-        return description
+        
+        text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        description = clean_description(text)
+        
+        # Verify the description is meaningful
+        if len(description) < 20 or description.lower() in ['description unavailable.', '']:
+            # Retry with alternative prompt
+            retry_prompt = f"[INST] Describe the content and genre of '{book_title}' in one clear sentence. [/INST]"
+            inputs = tokenizer(retry_prompt, return_tensors="pt").to(device)
+            with torch.no_grad():
+                retry_outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=100,
+                    temperature=0.8,
+                    do_sample=True
+                )
+            retry_text = tokenizer.decode(retry_outputs[0], skip_special_tokens=True)
+            description = clean_description(retry_text)
+        
+        return description if len(description) >= 20 else "Description unavailable."
+        
     except Exception as e:
         print(f"Error generating description for '{book_title}': {e}")
         return "Description unavailable."
 
+def setup_tokenizer_and_model():
+    """Initialize tokenizer and model with proper configuration."""
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        device_map="auto",
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        low_cpu_mem_usage=True
+    )
+    model.config.pad_token_id = tokenizer.pad_token_id
+    return tokenizer, model
+
 def main():
-    # Check if the output CSV exists to resume processing
-    if os.path.exists(OUTPUT_CSV):
-        print(f"Resuming from existing output file: '{OUTPUT_CSV}'")
-        df_output = pd.read_csv(OUTPUT_CSV)
-        # Ensure that the 'description' column exists
-        if 'description' not in df_output.columns:
-            df_output['description'] = ""
-        # Identify rows that need processing
-        mask = df_output['description'].isna() | (df_output['description'] == "")
-        df = df_output[mask].copy()
-        # Reset index for iteration
-        df.reset_index(drop=True, inplace=True)
-    else:
-        print(f"Starting fresh with input file: '{INPUT_CSV}'")
-        try:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    
+    tokenizer, model = setup_tokenizer_and_model()
+    
+    try:
+        if os.path.exists(OUTPUT_CSV):
+            df = pd.read_csv(OUTPUT_CSV)
+            if 'description' not in df.columns:
+                df['description'] = ""
+            mask = (df['description'].isna()) | (df['description'] == "") | (df['description'] == "Description unavailable.")
+            df = df[mask].copy()
+        else:
             df = pd.read_csv(INPUT_CSV)
-        except FileNotFoundError:
-            print(f"Input CSV file '{INPUT_CSV}' not found.")
-            exit(1)
-        except Exception as e:
-            print(f"Error reading '{INPUT_CSV}': {e}")
-            exit(1)
-
-        # Rename columns for consistency (optional)
-        df.rename(columns=lambda x: x.strip(), inplace=True)  # Remove any leading/trailing whitespace
-
-        # Check if 'Book-Title' column exists
-        if 'Book-Title' not in df.columns:
-            print("The CSV file does not contain a 'Book-Title' column.")
-            exit(1)
-
-        # Initialize 'description' column if it doesn't exist
-        if 'description' not in df.columns:
+            if 'Book-Title' not in df.columns:
+                raise ValueError("Missing 'Book-Title' column")
             df['description'] = ""
-
-    total_rows = df.shape[0]
-    print(f"Total rows to process: {total_rows}")
-
-    # Iterate over the DataFrame and generate descriptions
-    for idx, row in tqdm(df.iterrows(), total=total_rows, desc="Generating Descriptions"):
-        title = row['Book-Title']
-        if pd.isna(row['description']) or row['description'] == "":
-            description = generate_description_llama(title)
+        
+        df.reset_index(drop=True, inplace=True)
+        
+        total_rows = len(df)
+        print(f"Processing {total_rows} rows")
+        
+        for idx in tqdm(range(total_rows), desc="Generating Descriptions"):
+            title = df.at[idx, 'Book-Title']
+            description = generate_description(title, tokenizer, model, device)
             df.at[idx, 'description'] = description
-
-        # Checkpointing
-        if (idx + 1) % CHECKPOINT_INTERVAL == 0:
-            # Save the current progress
-            print(f"\nCheckpoint reached at row {idx + 1}. Saving progress...")
-            # If output CSV exists, append; else, create it
-            if os.path.exists(OUTPUT_CSV):
-                # Read the existing output CSV
-                df_existing = pd.read_csv(OUTPUT_CSV)
-                # Append the newly processed rows
-                df_existing = df_existing.append(df.iloc[:idx + 1], ignore_index=True)
-                # Save back to CSV
-                df_existing.to_csv(OUTPUT_CSV, index=False)
-            else:
-                df.to_csv(OUTPUT_CSV, index=False)
-            print(f"Progress saved to '{OUTPUT_CSV}'.\n")
-
-    # Save the remaining rows after the loop completes
-    print("Finalizing and saving all progress...")
-    df.to_csv(OUTPUT_CSV, index=False)
-    print(f"All descriptions added and saved to '{OUTPUT_CSV}'.")
+            
+            if (idx + 1) % CHECKPOINT_INTERVAL == 0 or idx == total_rows - 1:
+                print(f"\nSaving checkpoint at row {idx + 1}/{total_rows}")
+                if os.path.exists(OUTPUT_CSV):
+                    existing_df = pd.read_csv(OUTPUT_CSV)
+                    existing_df.loc[df.index, 'description'] = df['description']
+                    existing_df.to_csv(OUTPUT_CSV, index=False)
+                else:
+                    df.to_csv(OUTPUT_CSV, index=False)
+        
+        print("Processing completed")
+        
+    except Exception as e:
+        print(f"Error in main: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
