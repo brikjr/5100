@@ -73,7 +73,15 @@ pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1
 ```
 
 ```bash
-pip install pandas tqdm tansformers 
+pip install pandas  
+```
+
+```bash
+pip install tqdm 
+```
+
+```bash
+pip install tansformers 
 ```
 
 ```bash
