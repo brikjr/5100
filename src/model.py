@@ -7,6 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import os
 import json
+from sklearn.model_selection import train_test_split
 
 class BookDataset(Dataset):
     def __init__(self, df, tokenizer, max_length=512):
@@ -19,7 +20,6 @@ class BookDataset(Dataset):
         return len(self.titles)
         
     def __getitem__(self, idx):
-        # Combine title and description only
         book_text = f"Title: {self.titles[idx]} Description: {self.descriptions[idx]}"
         
         encoding = self.tokenizer(
@@ -63,52 +63,65 @@ class BookEmbeddingModel(nn.Module):
         model.load_state_dict(torch.load(os.path.join(load_path, 'book_embeddings_model.pth')))
         return model
 
-def save_embeddings(embeddings, book_ids, save_path):
+def save_embeddings(embeddings, book_info, save_path):
     os.makedirs(save_path, exist_ok=True)
     np.save(os.path.join(save_path, 'embeddings.npy'), embeddings)
-    with open(os.path.join(save_path, 'book_ids.json'), 'w') as f:
-        json.dump(book_ids, f)
+    with open(os.path.join(save_path, 'book_info.json'), 'w') as f:
+        json.dump(book_info, f)
 
 def load_embeddings(load_path):
     embeddings = np.load(os.path.join(load_path, 'embeddings.npy'))
-    with open(os.path.join(load_path, 'book_ids.json'), 'r') as f:
-        book_ids = json.load(f)
-    return embeddings, book_ids
+    with open(os.path.join(load_path, 'book_info.json'), 'r') as f:
+        book_info = json.load(f)
+    return embeddings, book_info
 
-def generate_book_embeddings(df, model, tokenizer, device):
+def evaluate_model(model, val_loader, criterion, device):
     model.eval()
-    embeddings = []
-    batch_size = 32
-    
-    dataset = BookDataset(df, tokenizer)
-    dataloader = DataLoader(dataset, batch_size=batch_size)
+    total_loss = 0
     
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in val_loader:
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-            embedding = model(input_ids, attention_mask)
-            embeddings.extend(embedding.cpu().numpy())
+            
+            embeddings = model(input_ids, attention_mask)
+            augmented = embeddings + torch.randn_like(embeddings) * 0.01
+            labels = torch.ones(embeddings.size(0)).to(device)
+            
+            loss = criterion(embeddings, augmented, labels)
+            total_loss += loss.item()
     
-    return np.array(embeddings)
+    return total_loss / len(val_loader)
 
-def train_and_save_model(df, save_dir='book_model', batch_size=16, epochs=3, lr=2e-5):
+def train_and_save_model(df, save_dir='book_model', batch_size=16, epochs=3, lr=2e-5, val_size=0.2):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
+    train_df, val_df = train_test_split(df, test_size=val_size, random_state=42)
+    print(f"Training set size: {len(train_df)}, Validation set size: {len(val_df)}")
     
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     model = BookEmbeddingModel().to(device)
     
-    dataset = BookDataset(df, tokenizer)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    train_dataset = BookDataset(train_df, tokenizer)
+    val_dataset = BookDataset(val_df, tokenizer)
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.CosineEmbeddingLoss()
     
-    model.train()
+    best_val_loss = float('inf')
+    early_stopping_patience = 3
+    no_improvement = 0
+    
     for epoch in range(epochs):
-        total_loss = 0
-        for batch in dataloader:
+        # Training phase
+        model.train()
+        total_train_loss = 0
+        
+        for batch in train_loader:
             optimizer.zero_grad()
             
             input_ids = batch['input_ids'].to(device)
@@ -122,37 +135,64 @@ def train_and_save_model(df, save_dir='book_model', batch_size=16, epochs=3, lr=
             loss.backward()
             optimizer.step()
             
-            total_loss += loss.item()
+            total_train_loss += loss.item()
         
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
+        avg_train_loss = total_train_loss / len(train_loader)
+        val_loss = evaluate_model(model, val_loader, criterion, device)
+        
+        print(f"Epoch {epoch+1}")
+        print(f"Average Training Loss: {avg_train_loss:.4f}")
+        print(f"Validation Loss: {val_loss:.4f}")
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            no_improvement = 0
+            model.save_model(save_dir)
+            tokenizer.save_pretrained(save_dir)
+        else:
+            no_improvement += 1
+            if no_improvement >= early_stopping_patience:
+                print("Early stopping triggered!")
+                break
     
-    model.save_model(save_dir)
-    tokenizer.save_pretrained(save_dir)
+    # Generate embeddings using full dataset
+    full_dataset = BookDataset(df, tokenizer)
+    full_loader = DataLoader(full_dataset, batch_size=batch_size)
     
-    embeddings = generate_book_embeddings(df, model, tokenizer, device)
-    book_ids = {i: {'isbn': row['ISBN'], 'title': row['Book-Title']} 
-                for i, row in df.iterrows()}
-    save_embeddings(embeddings, book_ids, save_dir)
+    embeddings = []
+    model.eval()
+    with torch.no_grad():
+        for batch in full_loader:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            embedding = model(input_ids, attention_mask)
+            embeddings.extend(embedding.cpu().numpy())
+    
+    embeddings = np.array(embeddings)
+    
+    # Save embeddings and book info (only title and description)
+    book_info = {i: {
+        'title': row['Book-Title'],
+        'description': row['description']
+    } for i, row in df.iterrows()}
+    
+    save_embeddings(embeddings, book_info, save_dir)
     
     return model, tokenizer, embeddings
 
-def load_saved_model_and_embeddings(load_dir='book_model'):
-    model = BookEmbeddingModel.load_model(load_dir)
-    tokenizer = AutoTokenizer.from_pretrained(load_dir)
-    embeddings, book_ids = load_embeddings(load_dir)
-    return model, tokenizer, embeddings, book_ids
-
 def main():
+    # Load data
     df = pd.read_csv('../data/books_with_valid_descriptions.csv')
-    df = df.dropna(subset=['description'])
+    df = df[['Book-Title', 'description']].dropna()  # Only keep needed columns
     
     print("Training and saving model...")
-    model, tokenizer, embeddings = train_and_save_model(df, save_dir='book_model', epochs=3)
+    model, tokenizer, embeddings = train_and_save_model(
+        df, 
+        save_dir='book_model',
+        epochs=10
+    )
     
-    print("\nLoading saved model and embeddings...")
-    model, tokenizer, embeddings, book_ids = load_saved_model_and_embeddings('book_model')
-    
+    # Test the model
     query = "I'm looking for a mystery thriller with supernatural elements"
     device = next(model.parameters()).device
     
@@ -175,11 +215,12 @@ def main():
     top_indices = np.argsort(similarities)[-top_k:][::-1]
     
     print("\nTop matches:")
+    book_info = load_embeddings(save_dir='book_model')[1]
     for idx in top_indices:
-        book_info = book_ids[str(idx)]
-        print(f"\nTitle: {book_info['title']}")
-        print(f"ISBN: {book_info['isbn']}")
+        info = book_info[str(idx)]
+        print(f"\nTitle: {info['title']}")
         print(f"Similarity: {similarities[idx]:.2f}")
+        print(f"Description: {info['description'][:200]}...")
 
 if __name__ == "__main__":
     main()
