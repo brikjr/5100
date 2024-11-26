@@ -5,12 +5,23 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+from typing import List, Dict, Tuple
+from tqdm.auto import tqdm
 import os
-import json
-from sklearn.model_selection import train_test_split
 
-class BookDataset(Dataset):
-    def __init__(self, df, tokenizer, max_length=512):
+class Config:
+    MODEL_NAME = 'bert-base-uncased'
+    MAX_LENGTH = 256
+    BATCH_SIZE = 32
+    SAVE_PATH = 'models/book_recommender'
+    N_RECOMMENDATIONS = 5
+    EMBEDDING_DIM = 768
+    HIDDEN_DIM = 512
+    DROPOUT = 0.3
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+class BookRecommenderDataset(Dataset):
+    def __init__(self, df: pd.DataFrame, tokenizer, max_length: int = Config.MAX_LENGTH):
         self.titles = df['Book-Title'].tolist()
         self.descriptions = df['description'].tolist()
         self.tokenizer = tokenizer
@@ -33,194 +44,256 @@ class BookDataset(Dataset):
         return {
             'input_ids': encoding['input_ids'].squeeze(),
             'attention_mask': encoding['attention_mask'].squeeze(),
+            'title': self.titles[idx]
         }
 
 class BookEmbeddingModel(nn.Module):
-    def __init__(self, model_name='bert-base-uncased'):
+    def __init__(self, model_name: str = Config.MODEL_NAME):
         super().__init__()
         self.transformer = AutoModel.from_pretrained(model_name)
+        self.embedding_dim = self.transformer.config.hidden_size
         
     def forward(self, input_ids, attention_mask):
         outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
-        return outputs.last_hidden_state[:, 0, :]
+        return outputs.last_hidden_state[:, 0, :]  # [CLS] token embedding
 
-    def save_model(self, save_path):
-        os.makedirs(save_path, exist_ok=True)
-        torch.save(self.state_dict(), os.path.join(save_path, 'book_embeddings_model.pth'))
+class RecommenderModel(nn.Module):
+    def __init__(self, embedding_dim: int = Config.EMBEDDING_DIM):
+        super().__init__()
+        self.mood_encoder = nn.Sequential(
+            nn.Linear(embedding_dim, Config.HIDDEN_DIM),
+            nn.ReLU(),
+            nn.Dropout(Config.DROPOUT),
+            nn.Linear(Config.HIDDEN_DIM, embedding_dim)
+        )
         
-        config = {
-            'model_type': 'BookEmbeddingModel',
-            'base_model': 'bert-base-uncased'
-        }
-        with open(os.path.join(save_path, 'model_config.json'), 'w') as f:
-            json.dump(config, f)
+    def forward(self, mood_embedding, book_embeddings):
+        mood_encoded = self.mood_encoder(mood_embedding)
+        return cosine_similarity(
+            mood_encoded.detach().cpu().numpy(),
+            book_embeddings.detach().cpu().numpy()
+        )
 
-    @classmethod
-    def load_model(cls, load_path):
-        with open(os.path.join(load_path, 'model_config.json'), 'r') as f:
-            config = json.load(f)
-        model = cls(model_name=config['base_model'])
-        model.load_state_dict(torch.load(os.path.join(load_path, 'book_embeddings_model.pth')))
-        return model
-
-def save_embeddings(embeddings, book_info, save_path):
-    os.makedirs(save_path, exist_ok=True)
-    np.save(os.path.join(save_path, 'embeddings.npy'), embeddings)
-    with open(os.path.join(save_path, 'book_info.json'), 'w') as f:
-        json.dump(book_info, f)
-
-def load_embeddings(load_path):
-    embeddings = np.load(os.path.join(load_path, 'embeddings.npy'))
-    with open(os.path.join(load_path, 'book_info.json'), 'r') as f:
-        book_info = json.load(f)
-    return embeddings, book_info
-
-def evaluate_model(model, val_loader, criterion, device):
-    model.eval()
-    total_loss = 0
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            
-            embeddings = model(input_ids, attention_mask)
-            augmented = embeddings + torch.randn_like(embeddings) * 0.01
-            labels = torch.ones(embeddings.size(0)).to(device)
-            
-            loss = criterion(embeddings, augmented, labels)
-            total_loss += loss.item()
-    
-    return total_loss / len(val_loader)
-
-def train_and_save_model(df, save_dir='book_model', batch_size=16, epochs=3, lr=2e-5, val_size=0.2):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    train_df, val_df = train_test_split(df, test_size=val_size, random_state=42)
-    print(f"Training set size: {len(train_df)}, Validation set size: {len(val_df)}")
-    
-    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-    model = BookEmbeddingModel().to(device)
-    
-    train_dataset = BookDataset(train_df, tokenizer)
-    val_dataset = BookDataset(val_df, tokenizer)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CosineEmbeddingLoss()
-    
-    best_val_loss = float('inf')
-    early_stopping_patience = 3
-    no_improvement = 0
-    
-    for epoch in range(epochs):
-        # Training phase
-        model.train()
-        total_train_loss = 0
+class BookRecommender:
+    def __init__(self, model_path: str = None):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {self.device}")
         
-        for batch in train_loader:
-            optimizer.zero_grad()
-            
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            
-            embeddings = model(input_ids, attention_mask)
-            augmented = embeddings + torch.randn_like(embeddings) * 0.01
-            labels = torch.ones(embeddings.size(0)).to(device)
-            
-            loss = criterion(embeddings, augmented, labels)
-            loss.backward()
-            optimizer.step()
-            
-            total_train_loss += loss.item()
+        self.tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
+        self.embedding_model = BookEmbeddingModel().to(self.device)
+        self.recommender = None
+        self.book_embeddings = None
+        self.books_df = None
         
-        avg_train_loss = total_train_loss / len(train_loader)
-        val_loss = evaluate_model(model, val_loader, criterion, device)
+        if model_path and os.path.exists(model_path):
+            self.load_models(model_path)
+            print(f"Loaded existing models from {model_path}")
+    
+    def verify_saved_data(self, save_path: str):
+        """Verify that the data was saved correctly."""
+        try:
+            model_path = os.path.join(save_path, 'models.pth')
+            embedding_path = os.path.join(save_path, 'book_embeddings.npy')
+            csv_path = os.path.join(save_path, 'books.csv')
+            
+            files_exist = all(os.path.exists(p) for p in [model_path, embedding_path, csv_path])
+            
+            if files_exist:
+                print("All files saved successfully!")
+                print(f"Model size: {os.path.getsize(model_path) / 1024 / 1024:.2f} MB")
+                print(f"Embeddings size: {os.path.getsize(embedding_path) / 1024 / 1024:.2f} MB")
+                print(f"CSV size: {os.path.getsize(csv_path) / 1024 / 1024:.2f} MB")
+                return True
+            else:
+                print("Some files are missing!")
+                return False
+                
+        except Exception as e:
+            print(f"Error verifying saved data: {str(e)}")
+            return False
+
+    def train(self, df: pd.DataFrame, save_path: str = 'models/book_recommender'):
+        print("\nInitializing training process...")
+        self.books_df = df
         
-        print(f"Epoch {epoch+1}")
-        print(f"Average Training Loss: {avg_train_loss:.4f}")
-        print(f"Validation Loss: {val_loss:.4f}")
+        print(f"Creating dataset with {len(df)} books...")
+        dataset = BookRecommenderDataset(df, self.tokenizer)
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=Config.BATCH_SIZE, 
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
         
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            no_improvement = 0
-            model.save_model(save_dir)
-            tokenizer.save_pretrained(save_dir)
+        print("\nGenerating book embeddings...")
+        self.book_embeddings = self._generate_embeddings(dataloader)
+        
+        print("\nInitializing recommender model...")
+        self.recommender = RecommenderModel(self.embedding_model.embedding_dim).to(self.device)
+        
+        print("\nSaving models and embeddings...")
+        self.save_models(save_path)
+        
+        # Verify the save was successful
+        if self.verify_saved_data(save_path):
+            print("Training and saving completed successfully!")
         else:
-            no_improvement += 1
-            if no_improvement >= early_stopping_patience:
-                print("Early stopping triggered!")
-                break
+            print("Warning: There might be issues with saved data!")
     
-    # Generate embeddings using full dataset
-    full_dataset = BookDataset(df, tokenizer)
-    full_loader = DataLoader(full_dataset, batch_size=batch_size)
+    def _generate_embeddings(self, dataloader: DataLoader) -> np.ndarray:
+        self.embedding_model.eval()
+        embeddings = []
+        
+        progress_bar = tqdm(
+            dataloader,
+            desc="Generating embeddings",
+            total=len(dataloader),
+            unit="batch"
+        )
+        
+        with torch.no_grad():
+            for batch in progress_bar:
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                
+                embedding = self.embedding_model(input_ids, attention_mask)
+                embeddings.extend(embedding.cpu().numpy())
+                
+                progress_bar.set_postfix({
+                    'batch_size': input_ids.shape[0],
+                    'embeddings': len(embeddings)
+                })
+        
+        return np.array(embeddings)
     
-    embeddings = []
-    model.eval()
-    with torch.no_grad():
-        for batch in full_loader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            embedding = model(input_ids, attention_mask)
-            embeddings.extend(embedding.cpu().numpy())
+    def recommend_books(
+        self, 
+        mood_description: str, 
+        n_recommendations: int = Config.N_RECOMMENDATIONS
+    ) -> List[Dict]:
+        print(f"\nProcessing mood: '{mood_description}'")
+        
+        mood_encoding = self.tokenizer(
+            mood_description,
+            truncation=True,
+            padding=True,
+            max_length=Config.MAX_LENGTH,
+            return_tensors='pt'
+        ).to(self.device)
+        
+        with torch.no_grad():
+            mood_embedding = self.embedding_model(
+                mood_encoding['input_ids'],
+                mood_encoding['attention_mask']
+            )
+            
+            similarity_scores = self.recommender(
+                mood_embedding,
+                torch.tensor(self.book_embeddings).to(self.device)
+            )[0]
+        
+        top_indices = similarity_scores.argsort()[-n_recommendations:][::-1]
+        
+        recommendations = []
+        for idx in top_indices:
+            book = self.books_df.iloc[idx]
+            recommendations.append({
+                'title': book['Book-Title'],
+                'description': book['description'],
+                'similarity_score': similarity_scores[idx]
+            })
+        
+        return recommendations
     
-    embeddings = np.array(embeddings)
+    def save_models(self, save_path: str):
+        try:
+            os.makedirs(save_path, exist_ok=True)
+            
+            print("Saving models...")
+            model_path = os.path.join(save_path, 'models.pth')
+            torch.save({
+                'embedding_model': self.embedding_model.state_dict(),
+                'recommender': self.recommender.state_dict() if self.recommender else None
+            }, model_path)
+            
+            print("Saving embeddings...")
+            embedding_path = os.path.join(save_path, 'book_embeddings.npy')
+            np.save(embedding_path, self.book_embeddings)
+            
+            print("Saving book data...")
+            csv_path = os.path.join(save_path, 'books.csv')
+            self.books_df.to_csv(csv_path, index=False, encoding='utf-8')
+            
+            print(f"All data saved to {save_path}")
+            
+        except Exception as e:
+            print(f"Error saving data: {str(e)}")
+            raise
     
-    # Save embeddings and book info (only title and description)
-    book_info = {i: {
-        'title': row['Book-Title'],
-        'description': row['description']
-    } for i, row in df.iterrows()}
-    
-    save_embeddings(embeddings, book_info, save_dir)
-    
-    return model, tokenizer, embeddings
+    def load_models(self, load_path: str):
+        try:
+            print("Loading saved models...")
+            model_path = os.path.join(load_path, 'models.pth')
+            checkpoint = torch.load(model_path)
+            self.embedding_model.load_state_dict(checkpoint['embedding_model'])
+            
+            if checkpoint['recommender']:
+                self.recommender = RecommenderModel(self.embedding_model.embedding_dim).to(self.device)
+                self.recommender.load_state_dict(checkpoint['recommender'])
+            
+            print("Loading embeddings and book data...")
+            embedding_path = os.path.join(load_path, 'book_embeddings.npy')
+            self.book_embeddings = np.load(embedding_path)
+            
+            csv_path = os.path.join(load_path, 'books.csv')
+            self.books_df = pd.read_csv(csv_path, encoding='utf-8')
+            
+            print("Model loading completed!")
+            
+        except Exception as e:
+            print(f"Error loading data: {str(e)}")
+            raise
 
 def main():
-    # Load data
-    df = pd.read_csv('../data/books_with_valid_descriptions.csv')
-    df = df[['Book-Title', 'description']].dropna()  # Only keep needed columns
-    
-    print("Training and saving model...")
-    model, tokenizer, embeddings = train_and_save_model(
-        df, 
-        save_dir='book_model',
-        epochs=10
-    )
-    
-    # Test the model
-    query = "I'm looking for a mystery thriller with supernatural elements"
-    device = next(model.parameters()).device
-    
-    query_encoding = tokenizer(
-        query,
-        truncation=True,
-        padding=True,
-        return_tensors='pt'
-    ).to(device)
-    
-    model.eval()
-    with torch.no_grad():
-        query_embedding = model(
-            query_encoding['input_ids'],
-            query_encoding['attention_mask']
-        ).cpu().numpy()
-    
-    similarities = cosine_similarity(query_embedding, embeddings)[0]
-    top_k = 5
-    top_indices = np.argsort(similarities)[-top_k:][::-1]
-    
-    print("\nTop matches:")
-    book_info = load_embeddings(save_dir='book_model')[1]
-    for idx in top_indices:
-        info = book_info[str(idx)]
-        print(f"\nTitle: {info['title']}")
-        print(f"Similarity: {similarities[idx]:.2f}")
-        print(f"Description: {info['description'][:200]}...")
+    try:
+        os.makedirs('models/book_recommender', exist_ok=True)
+        
+        print("Loading book dataset...")
+        df = pd.read_csv('../data/books_with_valid_descriptions.csv')
+        df = df[['Book-Title', 'description']].dropna()
+        print(f"Loaded {len(df)} books with valid descriptions")
+        
+        recommender = BookRecommender()
+        recommender.train(df, save_path='models/book_recommender')
+        
+        test_moods = [
+            "I want to read something magical and adventurous with dragons",
+            "Looking for a romantic story set in modern times",
+            "Need a thrilling mystery that will keep me guessing",
+            "Interested in historical fiction about World War II",
+            "Want to read about science and space exploration"
+        ]
+        
+        print("\nTesting recommender system...")
+        for i, mood in enumerate(test_moods, 1):
+            print(f"\nTest {i}/{len(test_moods)}")
+            recommendations = recommender.recommend_books(mood)
+            
+            print(f"\nFor mood: {mood}")
+            print("\nRecommended Books:")
+            for j, book in enumerate(recommendations, 1):
+                print(f"\n{j}. {book['title']}")
+                print(f"Similarity Score: {book['similarity_score']:.4f}")
+                print(f"Description: {book['description'][:200]}...")
+        
+        print("\nRecommendation testing completed!")
+        
+    except KeyboardInterrupt:
+        print("\nProcess interrupted by user")
+    except Exception as e:
+        print(f"\nAn error occurred: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()
