@@ -1,28 +1,12 @@
 import streamlit as st
 import pandas as pd
-from model import BookRecommender, Config
 import torch
+from model import BookRecommender, Config
 from pathlib import Path
-from difflib import SequenceMatcher
-from typing import List, Dict, Tuple
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 import traceback
-
-def calculate_similarity(a: str, b: str) -> float:
-    """Calculate string similarity between two titles."""
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-
-def find_matching_books(book_title: str, df: pd.DataFrame, threshold: float = 0.8) -> List[Dict]:
-    """Find books with similar titles in the database."""
-    matches = []
-    for _, row in df.iterrows():
-        similarity = calculate_similarity(book_title, row['Book-Title'])
-        if similarity >= threshold:
-            matches.append({
-                'title': row['Book-Title'],
-                'description': row['description'],
-                'similarity': similarity
-            })
-    return matches
+from typing import List, Dict
 
 class BookRecommenderApp:
     def __init__(self, model_path: str = 'models/book_recommender'):
@@ -34,21 +18,60 @@ class BookRecommenderApp:
             with st.spinner('Loading model... Please wait.'):
                 self.recommender = BookRecommender(self.model_path)
     
-    def find_best_matches(self, book_list: List[str]) -> List[Dict]:
-        """Find best matching books for the provided list."""
-        matched_books = []
-        not_found_books = []
+    def get_embedding(self, text: str) -> np.ndarray:
+        """Get embedding for any text using the model."""
+        encoding = self.recommender.tokenizer(
+            text,
+            truncation=True,
+            padding=True,
+            max_length=Config.MAX_LENGTH,
+            return_tensors='pt'
+        ).to(self.recommender.device)
         
-        for book in book_list:
-            matches = find_matching_books(book, self.recommender.books_df)
-            if matches:
-                # Sort matches by similarity and take the best match
-                best_match = sorted(matches, key=lambda x: x['similarity'], reverse=True)[0]
-                matched_books.append(best_match)
-            else:
-                not_found_books.append(book)
+        with torch.no_grad():
+            embedding = self.recommender.embedding_model(
+                encoding['input_ids'],
+                encoding['attention_mask']
+            )
+            
+        return embedding.cpu().numpy()[0]
+    
+    def recommend_from_user_list(
+        self,
+        user_books: List[str],
+        mood_description: str,
+        n_recommendations: int = 3
+    ) -> List[Dict]:
+        """Recommend books from user's list based on mood description."""
+        # Get mood embedding
+        mood_embedding = self.get_embedding(mood_description)
         
-        return matched_books, not_found_books
+        # Get embeddings for each book in user's list
+        book_embeddings = []
+        for book in user_books:
+            embedding = self.get_embedding(book)
+            book_embeddings.append(embedding)
+        
+        # Convert to numpy array
+        book_embeddings = np.array(book_embeddings)
+        
+        # Calculate similarities between mood and each book
+        similarities = cosine_similarity(
+            mood_embedding.reshape(1, -1),
+            book_embeddings
+        )[0]
+        
+        # Create recommendations list
+        recommendations = []
+        top_indices = similarities.argsort()[-n_recommendations:][::-1]
+        
+        for idx in top_indices:
+            recommendations.append({
+                'title': user_books[idx],
+                'similarity_score': similarities[idx]
+            })
+            
+        return recommendations
     
     def run(self):
         st.title("📚 Book Recommender System")
@@ -64,7 +87,7 @@ class BookRecommenderApp:
         # Text area for book list input
         books_input = st.text_area(
             "Enter your book list (one book per line):",
-            help="Enter the titles of books, one per line"
+            help="Enter the titles of books you want recommendations from"
         )
         
         # Input for mood/preference
@@ -73,14 +96,12 @@ class BookRecommenderApp:
             help="Describe your reading mood or the type of story you're interested in"
         )
         
-        # Add similarity threshold slider
-        similarity_threshold = st.slider(
-            "Title matching threshold",
-            min_value=0.5,
-            max_value=1.0,
-            value=0.8,
-            step=0.05,
-            help="Lower value will match more books but might be less accurate"
+        n_recommendations = st.slider(
+            "Number of recommendations",
+            min_value=1,
+            max_value=5,
+            value=3,
+            help="How many books do you want recommended?"
         )
         
         if st.button("Get Recommendations"):
@@ -88,46 +109,39 @@ class BookRecommenderApp:
                 st.warning("Please enter both your book list and mood description.")
                 return
                 
-            with st.spinner('Analyzing your preferences...'):
+            with st.spinner('Analyzing your books...'):
                 try:
                     # Process book list
                     book_list = [book.strip() for book in books_input.split('\n') if book.strip()]
                     
-                    # Find matching books
-                    matched_books, not_found_books = self.find_best_matches(book_list)
-                    
-                    if not matched_books:
-                        st.warning("None of the provided books were found in our database.")
-                        if not_found_books:
-                            st.write("Books not found:")
-                            for book in not_found_books:
-                                st.write(f"- {book}")
+                    if len(book_list) < n_recommendations:
+                        st.warning(f"Please enter at least {n_recommendations} books to get {n_recommendations} recommendations.")
                         return
                     
-                    # Display matched books
-                    st.subheader("Found These Books in Our Database:")
-                    for i, book in enumerate(matched_books, 1):
-                        st.write(f"{i}. {book['title']} (Match: {book['similarity']:.2%})")
-                        with st.expander("Show Description"):
-                            st.write(book['description'])
-                    
-                    # Show not found books if any
-                    if not_found_books:
-                        st.warning("Some books were not found:")
-                        for book in not_found_books:
-                            st.write(f"- {book}")
-                    
-                    # Get recommendations based on user's mood
-                    recommendations = self.recommender.recommend_books(
+                    # Get recommendations from user's list
+                    recommendations = self.recommend_from_user_list(
+                        book_list,
                         user_mood,
-                        n_recommendations=3
+                        n_recommendations
                     )
                     
-                    st.subheader("Based on Your Mood, Here Are Your Recommendations:")
+                    # Display input books
+                    st.subheader("Your Input Books:")
+                    for book in book_list:
+                        st.write(f"- {book}")
+                    
+                    st.subheader(f"Top {n_recommendations} Recommended Books From Your List:")
+                    st.write("Based on your mood:", user_mood)
                     for i, rec in enumerate(recommendations, 1):
-                        st.write(f"{i}. {rec['title']} (Similarity: {rec['similarity_score']:.4f})")
-                        with st.expander("Show Description"):
-                            st.write(rec['description'])
+                        st.write(f"{i}. {rec['title']}")
+                        st.write(f"   Similarity to your mood: {rec['similarity_score']:.4f}")
+                        
+                    # Add explanation
+                    st.info("""
+                    These recommendations are chosen from your provided book list based on how well 
+                    each book matches your described mood or preferences. The similarity score shows 
+                    how closely each book aligns with your described mood.
+                    """)
                 
                 except Exception as e:
                     st.error(f"Error processing recommendations: {str(e)}")
@@ -137,11 +151,10 @@ def main():
     st.set_page_config(
         page_title="Book Recommender",
         page_icon="📚",
-        layout="centered",
-        initial_sidebar_state="expanded"
+        layout="centered"
     )
     
-    # Add CSS for dark theme and better styling
+    # Add CSS
     st.markdown("""
         <style>
         .stTextArea textarea {
@@ -162,9 +175,9 @@ def main():
             background-color: #FF4B4B;
             color: white;
         }
-        .stWarning {
-            background-color: #423D00;
-            color: #FFD700;
+        .stInfo {
+            background-color: #1E2F45;
+            color: #9DC8FF;
         }
         </style>
     """, unsafe_allow_html=True)
