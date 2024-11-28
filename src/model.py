@@ -1,5 +1,7 @@
 import pandas as pd
 import torch
+import torch.backends
+import torch.backends.mps
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
@@ -18,7 +20,7 @@ class Config:
     EMBEDDING_DIM = 768
     HIDDEN_DIM = 512
     DROPOUT = 0.3
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
 
 class BookRecommenderDataset(Dataset):
     def __init__(self, df: pd.DataFrame, tokenizer, max_length: int = Config.MAX_LENGTH):
@@ -76,7 +78,7 @@ class RecommenderModel(nn.Module):
 
 class BookRecommender:
     def __init__(self, model_path: str = None):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
         print(f"Using device: {self.device}")
         
         self.tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
