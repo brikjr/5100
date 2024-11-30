@@ -1,0 +1,2 @@
+src/models/book_recommender/models.pth
+src/models/book_recommender/book_embeddings.npy
