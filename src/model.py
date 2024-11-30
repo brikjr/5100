@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import torch
 import torch.backends
@@ -7,16 +8,15 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-from typing import List, Dict, Tuple
 from tqdm.auto import tqdm
-import os
+from typing import List, Dict, Tuple
 
 class Config:
     MODEL_NAME = 'bert-base-uncased'
     MAX_LENGTH = 256
     BATCH_SIZE = 32
     SAVE_PATH = 'models/book_recommender'
-    N_RECOMMENDATIONS = 5
+    N_RECOMMENDATIONS = 10
     EMBEDDING_DIM = 768
     HIDDEN_DIM = 512
     DROPOUT = 0.3
@@ -91,30 +91,7 @@ class BookRecommender:
             self.load_models(model_path)
             print(f"Loaded existing models from {model_path}")
     
-    def verify_saved_data(self, save_path: str):
-        """Verify that the data was saved correctly."""
-        try:
-            model_path = os.path.join(save_path, 'models.pth')
-            embedding_path = os.path.join(save_path, 'book_embeddings.npy')
-            csv_path = os.path.join(save_path, 'books.csv')
-            
-            files_exist = all(os.path.exists(p) for p in [model_path, embedding_path, csv_path])
-            
-            if files_exist:
-                print("All files saved successfully!")
-                print(f"Model size: {os.path.getsize(model_path) / 1024 / 1024:.2f} MB")
-                print(f"Embeddings size: {os.path.getsize(embedding_path) / 1024 / 1024:.2f} MB")
-                print(f"CSV size: {os.path.getsize(csv_path) / 1024 / 1024:.2f} MB")
-                return True
-            else:
-                print("Some files are missing!")
-                return False
-                
-        except Exception as e:
-            print(f"Error verifying saved data: {str(e)}")
-            return False
-
-    def train(self, df: pd.DataFrame, save_path: str = 'models/book_recommender'):
+    def train(self, df: pd.DataFrame, save_path: str = Config.SAVE_PATH):
         print("\nInitializing training process...")
         self.books_df = df
         
@@ -132,17 +109,11 @@ class BookRecommender:
         self.book_embeddings = self._generate_embeddings(dataloader)
         
         print("\nInitializing recommender model...")
-        self.recommender = RecommenderModel(self.embedding_model.embedding_dim).to(self.device)
+        self.recommender = RecommenderModel(self.embedding_model.transformer.config.hidden_size).to(self.device)
         
         print("\nSaving models and embeddings...")
         self.save_models(save_path)
         
-        # Verify the save was successful
-        if self.verify_saved_data(save_path):
-            print("Training and saving completed successfully!")
-        else:
-            print("Warning: There might be issues with saved data!")
-    
     def _generate_embeddings(self, dataloader: DataLoader) -> np.ndarray:
         self.embedding_model.eval()
         embeddings = []
@@ -209,72 +180,49 @@ class BookRecommender:
         return recommendations
     
     def save_models(self, save_path: str):
-        try:
-            os.makedirs(save_path, exist_ok=True)
-            
-            print("Saving models...")
-            model_path = os.path.join(save_path, 'models.pth')
-            torch.save({
-                'embedding_model': self.embedding_model.state_dict(),
-                'recommender': self.recommender.state_dict() if self.recommender else None
-            }, model_path)
-            
-            print("Saving embeddings...")
-            embedding_path = os.path.join(save_path, 'book_embeddings.npy')
-            np.save(embedding_path, self.book_embeddings)
-            
-            print("Saving book data...")
-            csv_path = os.path.join(save_path, 'books.csv')
-            self.books_df.to_csv(csv_path, index=False, encoding='utf-8')
-            
-            print(f"All data saved to {save_path}")
-            
-        except Exception as e:
-            print(f"Error saving data: {str(e)}")
-            raise
+        os.makedirs(save_path, exist_ok=True)
+        print("Saving models...")
+        torch.save({
+            'embedding_model': self.embedding_model.state_dict(),
+            'recommender': self.recommender.state_dict() if self.recommender else None
+        }, os.path.join(save_path, 'models.pth'))
+        np.save(os.path.join(save_path, 'book_embeddings.npy'), self.book_embeddings)
+        self.books_df.to_csv(os.path.join(save_path, 'books.csv'), index=False, encoding='utf-8')
     
     def load_models(self, load_path: str):
-        try:
-            print("Loading saved models...")
-            model_path = os.path.join(load_path, 'models.pth')
-            checkpoint = torch.load(model_path)
-            self.embedding_model.load_state_dict(checkpoint['embedding_model'])
-            
-            if checkpoint['recommender']:
-                self.recommender = RecommenderModel(self.embedding_model.embedding_dim).to(self.device)
-                self.recommender.load_state_dict(checkpoint['recommender'])
-            
-            print("Loading embeddings and book data...")
-            embedding_path = os.path.join(load_path, 'book_embeddings.npy')
-            self.book_embeddings = np.load(embedding_path)
-            
-            csv_path = os.path.join(load_path, 'books.csv')
-            self.books_df = pd.read_csv(csv_path, encoding='utf-8')
-            
-            print("Model loading completed!")
-            
-        except Exception as e:
-            print(f"Error loading data: {str(e)}")
-            raise
+        print("Loading saved models...")
+        checkpoint = torch.load(os.path.join(load_path, 'models.pth'))
+        self.embedding_model.load_state_dict(checkpoint['embedding_model'])
+        if checkpoint['recommender']:
+            self.recommender = RecommenderModel(self.embedding_model.transformer.config.hidden_size).to(self.device)
+            self.recommender.load_state_dict(checkpoint['recommender'])
+        self.book_embeddings = np.load(os.path.join(load_path, 'book_embeddings.npy'))
+        self.books_df = pd.read_csv(os.path.join(load_path, 'books.csv'), encoding='utf-8')
 
 def main():
     try:
-        os.makedirs('models/book_recommender', exist_ok=True)
+        # Ensure the save directory exists
+        os.makedirs(Config.SAVE_PATH, exist_ok=True)
         
+        # Load your dataset
         print("Loading book dataset...")
-        df = pd.read_csv('../data/books_with_valid_descriptions.csv')
+        df = pd.read_csv('../data/books_with_valid_descriptions.csv')  # Replace with your dataset path
         df = df[['Book-Title', 'description']].dropna()
-        print(f"Loaded {len(df)} books with valid descriptions")
+        print(f"Loaded {len(df)} books with valid descriptions.")
         
+        # Initialize the recommender system
         recommender = BookRecommender()
-        recommender.train(df, save_path='models/book_recommender')
         
+        # Train the model
+        recommender.train(df, save_path=Config.SAVE_PATH)
+        
+        # Test recommendations
         test_moods = [
-            "I want to read something magical and adventurous with dragons",
-            "Looking for a romantic story set in modern times",
-            "Need a thrilling mystery that will keep me guessing",
-            "Interested in historical fiction about World War II",
-            "Want to read about science and space exploration"
+            "I want to read something magical and adventurous with dragons.",
+            "Looking for a romantic story set in modern times.",
+            "Need a thrilling mystery that will keep me guessing.",
+            "Interested in historical fiction about World War II.",
+            "Want to read about science and space exploration."
         ]
         
         print("\nTesting recommender system...")
@@ -290,9 +238,9 @@ def main():
                 print(f"Description: {book['description'][:200]}...")
         
         print("\nRecommendation testing completed!")
-        
+    
     except KeyboardInterrupt:
-        print("\nProcess interrupted by user")
+        print("\nProcess interrupted by user.")
     except Exception as e:
         print(f"\nAn error occurred: {str(e)}")
         raise
