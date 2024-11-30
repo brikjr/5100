@@ -1,36 +1,26 @@
 import ollama
-import base64
-from PIL import Image
-import io
+def generate_resopnse(image):
+  response = ollama.chat(model='llama3.2-vision', messages=[
+    {
+      'role': 'user',
+      'content': 'List the titles of all the books in the image. List the book titles in quotes. Do not include any other text in the response, only the book titles in quotes.',
+      'images': [image]
+    },
+  ])
+  response = response['message']['content']
+  return response
 
-def encode_image_to_base64(image_bytes):
-    """Convert image bytes to base64 string."""
-    return base64.b64encode(image_bytes).decode('utf-8')
-
-def generate_resopnse(image_file):
-    """Generate response from Ollama model using uploaded file."""
-    try:
-        # Read image bytes from StreamlitUploadedFile
-        image_bytes = image_file.getvalue()
-        
-        # Convert to base64
-        base64_image = encode_image_to_base64(image_bytes)
-        
-        response = ollama.chat(model='llama2-vision', messages=[
-            {
-                'role': 'user',
-                'content': 'List the titles of all the books in the image. List the book titles in quotes. Do not include any other text in the response, only the book titles in quotes.',
-                'images': [base64_image]
-            },
-        ])
-        response = response['message']['content']
-        return response
-    except Exception as e:
-        print(f"Error in generate_response: {str(e)}")
-        raise
-
+'''
+Function: titles_to_list
+  This function takes in the string response from the Llama model and converts the response to a list of titles. This
+  function helps to handle some of the inconsistency in the LLM response. The output is list with all quotations removed
+  and the title of the book in each entry. 
+Parameters:
+  response: The string response from the LLM that has the titles of the books in quotation marks. 
+Output:
+  A list where each entry is the title of the book.
+'''
 def titles_to_list(response):
-    """Convert response string to list of titles."""
     # Setup a flag to account for if a quotation has been seen
     quote_seen = 0
     # Setup an empty string for the title and an empty list for the return value
@@ -55,14 +45,5 @@ def titles_to_list(response):
     unique_list = list(set(title_list))
     return unique_list
 
-def processImageGetList(image_file):
-    """Process image file and return list of book titles."""
-    try:
-        if image_file is None:
-            return []
-            
-        response = generate_resopnse(image_file)
-        return titles_to_list(response)
-    except Exception as e:
-        print(f"Error processing image: {str(e)}")
-        return []
+def processImageGetList(image):
+    return titles_to_list(generate_resopnse(image))
