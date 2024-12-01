@@ -10,16 +10,18 @@ from typing import List, Dict
 from model_image_analyzer import *
 from sklearn.metrics.pairwise import cosine_similarity
 
-'''
-Class: BookRecommenderApp
-    This class defines the streamlit application that implements the bookshelf analyzer and receommender
-    model. This class defines methods for generating the UI, imlpementing the saved model, reading the
-    bookshelf, and creating recommendations.
-Parameters:
-    model_path: Optional parameter to specify a custom trained model
-    dataset_path: Optional parameter to specify a CSV dataset with book titles and descriptions.
-Output: Generates a stremalit UI
-'''
+
+
+
+# Class: BookRecommenderApp
+#     This class defines the streamlit application that implements the bookshelf analyzer and receommender
+#     model. This class defines methods for generating the UI, imlpementing the saved model, reading the
+#     bookshelf, and creating recommendations.
+# Parameters:
+#     model_path: Optional parameter to specify a custom trained model
+#     dataset_path: Optional parameter to specify a CSV dataset with book titles and descriptions.
+# Output: Generates a stremalit UI
+
 class BookRecommenderApp:
     # Initialize the class and accept a model path and a dataset path (both optional)
     def __init__(self, model_path: str = 'models/book_recommender', dataset_path: str = None):
@@ -306,7 +308,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
     
-    app = BookRecommenderApp(datasetPath="../data/books_with_valid_descriptions.csv")
+    app = BookRecommenderApp(dataset_path="../data/books_with_valid_descriptions.csv")
     app.run()
 
 if __name__ == "__main__":
