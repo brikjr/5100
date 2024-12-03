@@ -1,3 +1,6 @@
+This project aims to analyze an image of a bookshelf, extract the titles, accept a reading mood from a user, and output the books that match that mood.
+A video of the final deployed project can be seen here: https://www.youtube.com/watch?v=sYn1Vx80xRk&ab_channel=WinstonHeinrichs
+
 # Project Setup
 
 This project uses Python 3.10 with PyTorch, Pandas, and NumPy. Follow the instructions below to set up your environment and contribute to the project.
