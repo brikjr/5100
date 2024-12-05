@@ -3,7 +3,19 @@ A video of the final deployed project can be seen here: https://www.youtube.com/
 
 # Project Setup
 
-This project uses Python 3.10 with PyTorch, Pandas, and NumPy. Follow the instructions below to set up your environment and contribute to the project.
+This project uses Python 3.10 with PyTorch, Pandas, Ollama, and NumPy. Follow the instructions below to set up your environment and contribute to the project.
+
+## Run Instructions
+
+To run this project, please run the streamlit application in src called app.py by
+```bash
+cd src
+streamlit run app.py
+```
+
+This project requires Ollama and access to the model llama3.2-vision which can be found here: https://ollama.com/library/llama3.2-vision
+
+Additionally, to run the app the recommendation model needs to be trained. Train this model by running the python file under src/model.py
 
 ## Prerequisites
 
