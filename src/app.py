@@ -150,7 +150,7 @@ class BookRecommenderApp:
     def load_dataset_for_descriptions(self, dataset):
         if dataset is not None:
             print("Loading book dataset...")
-            df = pd.read_csv('../data/books_with_valid_descriptions.csv')  # Replace with your dataset path
+            df = pd.read_csv('../data/books_with_valid_descriptions.csv')
             df = df[['Book-Title', 'description']].dropna()
             print(f"Loaded {len(df)} books with valid descriptions.")
             return df
@@ -159,7 +159,8 @@ class BookRecommenderApp:
     
     def run(self):
         st.title("📚 Book Recommender System")
-
+        
+        # Load the model
         try:
             self.load_model()
         except Exception as e:
@@ -170,12 +171,14 @@ class BookRecommenderApp:
         st.header("1. Add Your Books")
         uploaded_file = st.file_uploader(
             "Upload an image of your bookshelf",
-            ['jpg', 'jpeg', 'heic', 'png']
+            ['jpg', 'jpeg', 'png']
         )
         
+        # If the image is not None show the image
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded Image")
-            
+        
+        # Process the image
         if st.button("Process Image", type="primary"):
             st.session_state.book_list = self.process_image(uploaded_file)
             if st.session_state.book_list:
@@ -192,6 +195,7 @@ class BookRecommenderApp:
             height=150
         )
         
+        # For each book in the text area add it to the list
         if books_input:
             st.session_state.book_list = [
                 book.strip() for book in books_input.split("\n")
@@ -211,13 +215,14 @@ class BookRecommenderApp:
             help="Describe the type of story or experience you're looking for"
         )
         
+        # Ask for the number of recommendations
         n_recommendations = st.slider(
             "Number of recommendations",
             min_value=1,
             max_value=min(5, len(st.session_state.book_list)) if st.session_state.book_list else 5,
             value=2
         )
-
+        # Make sure there are enough books for the number of recommendations being requested
         if not st.session_state.book_list or len(st.session_state.book_list) < n_recommendations:
             st.warning(f"Please enter at least {n_recommendations} books to get {n_recommendations} recommendations.")
             return
@@ -235,12 +240,6 @@ class BookRecommenderApp:
                     mood,
                     n_recommendations
                 )
-
-                # recommendations = self.get_book_recommendations(
-                #     st.session_state.book_list,
-                #     mood,
-                #     n_recommendations
-                # )
                     
                 # Display input books
                 st.subheader("Your Input Books:")
@@ -249,10 +248,14 @@ class BookRecommenderApp:
                 
                 st.subheader(f"📚 Top {n_recommendations} Recommended Books From Your List:")
                 st.write("Based on your mood:", mood)
+                # For each recommended book
                 for i, rec in enumerate(recommendations, 1):
                     with st.expander(f"{i}. {rec['title']} (Match: {rec['similarity_score']:.2f})"):
+                        # If there is a dataset loaded
                         if(self.dataset is not None):
+                            # find the row with the book title in it
                             row = self.dataset.loc[self.dataset['Book-Title'].str.strip().str.lower() == rec['title'].strip().lower()]
+                            # If there is the book in the database, show the description, otherwise say the description isn't available
                             if not row.empty:
                                 st.write("Description:", row.iloc[0]['description'])
                             else:
