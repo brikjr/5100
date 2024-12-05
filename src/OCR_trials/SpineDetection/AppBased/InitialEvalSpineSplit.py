@@ -200,7 +200,7 @@ def draw_spine_lines(img):
 
     return final_image
 
-image_path = "../Demo.jpg"
+image_path = "5BooksSameDirections.jpg"
 image = cv2.imread(image_path)
 img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
